@@ -1,8 +1,9 @@
 # smMIPS-Detection-Pipeline
 
 ## Introduction
-smMIPS-Detection-Pipeline is a bioinformatics analysis pipeline to identify somatic mutations from Illumina Next Generation Sequencing data.  
-The pipeline is built using Nextflow (version 20.04.1).  
+smMIPS-Detection-Pipeline is a bioinformatics analysis pipeline to identify somatic mutations from Illumina Next Generation Sequencing data for libraries prepared using smMIPS.
+The pipeline is built using Nextflow (version 20.04.1).
+The pipeline trims adapters, creates paired end assembly, maps the reads to the human genome, uses GATK Best Practices to create BAM files. CoverView is used to report read depth coverage and quality metrics of the data. A variety of variant callers are used to call mutations followed by a machine learning based algorithm in SomaticSeq to create a consensus based VCF. Platypus and Freebayes are used to call INDELs. FLT3-ITD variants are called using Get-ITD. The variants are then annotated with ANNOVAR and CAVA and formatted using custom scripts. 
 
 ## Pipeline Summary
 
@@ -36,11 +37,11 @@ The pipeline is built using Nextflow (version 20.04.1).
 10. Coverview
 11. CAVA
 12. Qualimap
-13. Multianno files from ANNOVAR formatted using custom python scripts
+13. ANNOVAR Annotated files are formatted using custom python scripts
 14. Excel Sheet generated for each sample in Final_Output Directory 
 15. Temporary files for each sample are deleted
 
-### Software Versions on which pipeline was developed
+### Software Dependencies
 fastq-mcf = 1.05  
 PEAR = v0.9.10  
 Picard = 2.17.1  
@@ -55,7 +56,7 @@ Varscan = v2.3.9
 Platypus  
   
 ## Usage
-### Prerequesites
+### Prerequisites
 1. Install dependencies listed above.
 2. Create a sample sheet in .CSV format, with a list of sample IDs.
 3. Create BEDfiles as follows  
