@@ -1,5 +1,6 @@
 #!/usr/bin/env nextflow
 
+"mkdir Coverview".execute()
 
 Channel
     .fromPath(params.input)
@@ -501,12 +502,13 @@ process Final_Output {
 
 process remove_files{
 	input:
-		each Sample from finalOutput_ch.toList()
+		each Sample from mergeDone_ch.toList()
 		val Sample1 from coverviewreportDone_ch.toList()
-		val Sample2 from mergeDone_ch.toList()
+		val Sample2 from finalOutput_ch.toList()
 	script:
 	"""
 	rm -rf ${PWD}/${Sample[0]}/
+	rm -rf ${PWD}/Coverview/
 	"""
 }
 
