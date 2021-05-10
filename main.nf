@@ -1,516 +1,818 @@
 #!/usr/bin/env nextflow
+nextflow.enable.dsl=2
 
 "mkdir Coverview".execute()
 
-Channel
-    .fromPath(params.input)
-    .splitCsv(header:false)
-    .map{ it }
-    .set { samples_ch }
 
 log.info """
 STARTING PIPELINE
 =*=*=*=*=*=*=*=*=
 
 Sample list: ${params.input}
-BED file: ${params.bedfile}
+BED file: ${params.bedfile}.bed
 Sequences in:${params.sequences}
 
 """
 
-process trimming {
+
+if (params.help) {
+    log.info "----------------------------------------------------------------"
+    log.info ""
+	log.info "						USAGE                                     "
+    log.info ""
+    log.info "	nextflow run main.nf [options] -entry [workflow options]"
+	log.info ""
+	log.info "Options"
+	log.info "	--input                 path to csv file containing list of sample IDs."
+	log.info "	--sequences             path to directory containing fastq files."
+	log.info "	--bedfile               path to the BED4 coordinate bedfile (without extension)"
+	log.info "	--genome                path to reference genome"
+	log.info "	--adaptors              path to FASTA file of adaptors for trimming"
+	log.info ""
+	log.info "Workflow Options"
+	log.info "	MIPS"
+	log.info "	ALL"
+	log.info "	CLL"
+	log.info "	AMPLICON"
+	log.info ""
+	log.info "Optional Arguments"
+	log.info "	--cpus			Max Number of CPUs"
+	log.info ""
+}
+
+
+process trimming_fastq_mcf {
 	maxForks 15
-	publishDir "${PWD}/${Sample[0]}/processed_reads/", mode: 'copy'
+	publishDir "${PWD}/${Sample}/processed_reads/", mode: 'copy'
 	input:
-		val Sample from samples_ch	
+		val (Sample)
 	output:
-		tuple(Sample, file("*.fastq")) into trimmed_ch
+	 tuple val (Sample), file ("*.fastq")
 	script:
 	"""
-	${params.ea_utils_path}/fastq-mcf -o ${Sample[0]}.R1.trimmed.fastq -o ${Sample[0]}.R2.trimmed.fastq -l 53 -k 0 -q 0 ${params.adaptors} ${params.sequences}/${Sample[0]}*_R1_*.fastq.gz ${params.sequences}/${Sample[0]}*_R2_*.fastq.gz
+	${params.ea_utils_path}/fastq-mcf -o ${Sample}.R1.trimmed.fastq -o ${Sample}.R2.trimmed.fastq -l 53 -k 0 -q 0 ${params.adaptors} ${params.sequences}/${Sample}*_R1_*.fastq.gz ${params.sequences}/${Sample}*_R2_*.fastq.gz
 	"""
 }
+
+
 
 process gzip{
-	executor="local"
-	publishDir "${PWD}/${Sample[0]}/processed_reads/", mode: 'copy'
+	publishDir "${PWD}/${Sample}/processed_reads/", mode: 'copy'
 	input:
-		set Sample, file(trimmedFiles) from trimmed_ch
+		tuple val (Sample), file(trimmedFiles)
 	output:
-		val Sample into gzipped_ch
+		val Sample
 	script:
 	"""
-	mkdir "$PWD/${Sample[0]}/Annovar_Modified/" 
-	gzip -f ${PWD}/${Sample[0]}/processed_reads/${trimmedFiles[0]}
-	gzip -f ${PWD}/${Sample[0]}/processed_reads/${trimmedFiles[1]}
+	mkdir "$PWD/${Sample}/Annovar_Modified/" 
+	gzip -f ${PWD}/${Sample}/processed_reads/${trimmedFiles[0]}
+	gzip -f ${PWD}/${Sample}/processed_reads/${trimmedFiles[1]}
 	"""
 }
 
-process pair_assembly{
-	publishDir "${PWD}/${Sample[0]}/assembled_reads/", mode: 'copy'
+
+process pair_assembly_pear {
+	memory '7.0 GB'
+	publishDir "${PWD}/${Sample}/assembled_reads/", mode: 'copy'
 	input:
-		val Sample from gzipped_ch
+		val Sample
 	output:
-		tuple(Sample, file('*')) into paired_ch
+		tuple val (Sample), file("*") 
 	script:
 	"""
-	${params.pear_path} -f ${PWD}/${Sample[0]}/processed_reads/${Sample[0]}.R1.trimmed.fastq.gz -r ${PWD}/${Sample[0]}/processed_reads/${Sample[0]}.R2.trimmed.fastq.gz -o ${Sample[0]} -n 53 -j 15
+	${params.pear_path} -f ${PWD}/${Sample}/processed_reads/${Sample}.R1.trimmed.fastq.gz -r ${PWD}/${Sample}/processed_reads/${Sample}.R2.trimmed.fastq.gz -o ${Sample} -n 53 -j 15
 	"""
 }
+
 
 process mapping_reads{
-	publishDir "${PWD}/${Sample[0]}/mapped_reads/", mode: 'copy'
+	maxForks 15
+	publishDir "${PWD}/${Sample}/mapped_reads/", mode: 'copy'
 	input:
-		set Sample, file(pairAssembled) from paired_ch
+		tuple val (Sample), file (pairAssembled)
 	output:
-		tuple (Sample, file ("*.sam")) into bwa_ch
+		tuple val (Sample), file ("*.sam")
 	script:
 	"""
-	bwa mem -R "@RG\\tID:AML\\tPL:ILLUMINA\\tLB:LIB-MIPS\\tSM:${Sample[0]}\\tPI:200" -M -t 20 ${params.genome} ${pairAssembled[0]} > ${Sample[0]}.sam
+	bwa mem -R "@RG\\tID:AML\\tPL:ILLUMINA\\tLB:LIB-MIPS\\tSM:${Sample}\\tPI:200" -M -t 20 ${params.genome} ${pairAssembled[0]} > ${Sample}.sam
 	"""
 }
 
 process sam_conversion{
-	publishDir "$PWD/${Sample[0]}/mapped_reads/", mode: 'copy', pattern: '*.fxd_sorted.bam'
-	publishDir "$PWD/${Sample[0]}/mapped_reads/", mode: 'copy', pattern: '*.fxd_sorted.bam.bai'
+	maxForks 15
+	publishDir "$PWD/${Sample}/mapped_reads/", mode: 'copy', pattern: '*.fxd_sorted.bam'
+	publishDir "$PWD/${Sample}/mapped_reads/", mode: 'copy', pattern: '*.fxd_sorted.bam.bai'
 
 	input:
-		set (Sample, file(samFile)) from bwa_ch
+		tuple val (Sample), file(samFile)
 	output:
-		tuple (Sample, file ("*.fxd_sorted.bam"), file ("*.fxd_sorted.bam.bai")) into realign_ch
-		tuple (Sample, file ("*.fxd_sorted.bam"), file ("*.fxd_sorted.bam.bai")) into indelRealign_ch
+		tuple val(Sample), file ("*.fxd_sorted.bam"), file ("*.fxd_sorted.bam.bai")
 	
 	script:
 	"""
-	java -Xmx8G -jar ${params.picard_path} FixMateInformation I= ${samFile} O= ${Sample[0]}.fxd.sam VALIDATION_STRINGENCY=SILENT
-	${params.samtools} view -bT ${params.genome} ${Sample[0]}.fxd.sam > ${Sample[0]}.fxd.bam
-	${params.samtools} sort ${Sample[0]}.fxd.bam > ${Sample[0]}.fxd_sorted.bam
-	${params.samtools} index ${Sample[0]}.fxd_sorted.bam > ${Sample[0]}.fxd_sorted.bam.bai
+	java -Xmx8G -jar ${params.picard_path} FixMateInformation I= ${samFile} O= ${Sample}.fxd.sam VALIDATION_STRINGENCY=SILENT
+	${params.samtools} view -bT ${params.genome} ${Sample}.fxd.sam > ${Sample}.fxd.bam
+	${params.samtools} sort ${Sample}.fxd.bam > ${Sample}.fxd_sorted.bam
+	${params.samtools} index ${Sample}.fxd_sorted.bam > ${Sample}.fxd_sorted.bam.bai
 	"""
 }
 
 process RealignerTargetCreator {
-	publishDir "${PWD}/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.intervals'
+	publishDir "${PWD}/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.intervals'
 	
 	input:
-		set (Sample, file (bamFiles)) from realign_ch
+		tuple val (Sample), file (bamFile), file(bamBai)
 	output:
-		tuple (Sample, file ("*.intervals")) into realignTargetCreater_ch
+		tuple val(Sample), file ("*.intervals")
 	script:
 	"""
-	java -Xmx8G -jar ${params.GATK38_path} -T RealignerTargetCreator -R ${params.genome} -nt 10 -I ${bamFiles[0]} --known ${params.site1} -o ${Sample[0]}.intervals
+	java -Xmx8G -jar ${params.GATK38_path} -T RealignerTargetCreator -R ${params.genome} -nt 10 -I ${bamFile} --known ${params.site1} -o ${Sample}.intervals
 	"""
 }
 
 process IndelRealigner{
-	publishDir "${PWD}/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.realigned.bam'
+	publishDir "${PWD}/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.realigned.bam'
 	input:
-		set (Sample, file (targetIntervals), file(bamFiles)) from realignTargetCreater_ch.join(indelRealign_ch)
+		tuple val(Sample), file (targetIntervals), file(bamFile), file(bamBai)
 	output:
-		tuple (Sample, file ("*.realigned.bam")) into IndelRealigner_ch
-		tuple (Sample, file ("*.realigned.bam")) into printreads_ch
+		tuple val(Sample), file ("*.realigned.bam")
 	script:
 	"""
-	java -Xmx8G -jar ${params.GATK38_path} -T IndelRealigner -R ${params.genome} -I ${bamFiles[0]} -known ${params.site1} --targetIntervals ${targetIntervals} -o ${Sample[0]}.realigned.bam
+	echo ${Sample} ${targetIntervals} ${bamFile}
+	java -Xmx8G -jar ${params.GATK38_path} -T IndelRealigner -R ${params.genome} -I ${bamFile} -known ${params.site1} --targetIntervals ${targetIntervals} -o ${Sample}.realigned.bam
 	"""
 }
 
 process BaseRecalibrator{
-	publishDir "${PWD}/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.recal_data.table'
+	publishDir "${PWD}/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.recal_data.table'
 	input:
-		set (Sample, file (bamFile)) from IndelRealigner_ch
+		tuple val (Sample), file (realignedBam)
 	output:
-		tuple (Sample, file ("*.recal_data.table")) into BaseRecalibrator_ch
+		tuple val(Sample), file ("*.recal_data.table")
 	script:
 	"""
-	java -Xmx8G -jar ${params.GATK38_path} -T BaseRecalibrator -R ${params.genome} -I ${bamFile} -knownSites ${params.site2} -knownSites ${params.site3} -o ${Sample[0]}.recal_data.table
+	java -Xmx8G -jar ${params.GATK38_path} -T BaseRecalibrator -R ${params.genome} -I ${realignedBam} -knownSites ${params.site2} -knownSites ${params.site3} -o ${Sample}.recal_data.table
 	"""
 }
 
 process PrintReads{
-	publishDir "${PWD}/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.aligned.recalibrated.bam'
+	publishDir "${PWD}/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.aligned.recalibrated.bam'
 	input:
-		set (Sample, file (realignedBam), file (recal_dataTable)) from printreads_ch.join(BaseRecalibrator_ch)
+		tuple val (Sample), file (realignedBam), file (recal_dataTable)
 	output:
-		tuple (Sample, file ("*.aligned.recalibrated.bam")) into printedReads_ch
+		tuple val (Sample), file ("*.aligned.recalibrated.bam")
 	script:
 	"""
-	java -Xmx8G -jar ${params.GATK38_path} -T PrintReads -R ${params.genome} -I ${realignedBam} --BQSR ${recal_dataTable} -o ${Sample[0]}.aligned.recalibrated.bam
+	java -Xmx8G -jar ${params.GATK38_path} -T PrintReads -R ${params.genome} -I ${realignedBam} --BQSR ${recal_dataTable} -o ${Sample}.aligned.recalibrated.bam
 	"""
 }
 
 process generatefinalbam{
-	publishDir "$PWD/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.final.bam'
-	publishDir "$PWD/Final_Output/${Sample[0]}/", mode: 'copy', pattern: '*.final.bam'
-	publishDir "$PWD/${Sample[0]}/gatk38_processing/", mode: 'copy', pattern: '*.final.bam.bai'
-	publishDir "$PWD/Final_Output/${Sample[0]}/", mode: 'copy', pattern: '*.final.bam.bai'
+	publishDir "$PWD/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.final.bam'
+	publishDir "$PWD/Final_Output/${Sample}/", mode: 'copy', pattern: '*.final.bam'
+	publishDir "$PWD/${Sample}/gatk38_processing/", mode: 'copy', pattern: '*.final.bam.bai'
+	publishDir "$PWD/Final_Output/${Sample}/", mode: 'copy', pattern: '*.final.bam.bai'
 	
 	input:
-		set (Sample , file(alignedRecalibratedBam)) from printedReads_ch
+		tuple val (Sample), file(alignedRecalibratedBam)
 	output:
-		tuple (Sample, file ("*.final.bam"),  file ("*.final.bam.bai")) into bamGenerated_ch
-		tuple (Sample, file ("*")) into runMutect_ch
-		tuple (Sample, file ("*")) into runFreebayes_ch
-		tuple (Sample, file ("*.*")) into runPlatypus_ch
-		tuple (Sample, file ("*.*")) into runVardict_ch
-		tuple (Sample, file ("*.*")) into runVarscan_ch
-		tuple (Sample, file ("*.*")) into runStrelka_ch
-		tuple (Sample, file ("*.*")) into runLofreq_ch
-		tuple (Sample, file ("*.*")) into rungetITD_ch
-		tuple (Sample, file ("*.*")) into runCoverage_ch
-		tuple (Sample, file ("*.*")) into runCoverview_ch
-		tuple (Sample) into runSomaticSeq_ch
+		tuple val(Sample), file ("*.final.bam"),  file ("*.final.bam.bai")
 		
 	script:
 	"""
-	${params.samtools} sort ${alignedRecalibratedBam} > ${Sample[0]}.final.bam
-	${params.samtools} index ${Sample[0]}.final.bam > ${Sample[0]}.final.bam.bai
+	${params.samtools} sort ${alignedRecalibratedBam} > ${Sample}.final.bam
+	${params.samtools} index ${Sample}.final.bam > ${Sample}.final.bam.bai
 	"""
 }
 
 process mutect2_run{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.mutect2.vcf'
+	maxForks 10
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.mutect2.vcf'
 	
 	input:
-		set (Sample , file(finalBams)) from runMutect_ch
+		tuple val(Sample), file(finalBam), file (finalBamBai)
 	output:
-		tuple (Sample, file ("*.mutect2.vcf")) into mutect2Done_ch
-		val Sample into mutect2somaticseq_ch
+		tuple val (Sample), file ("*.mutect2.vcf")
 
 	script:
 	"""
-	java -Xmx10G -jar ${params.GATK38_path} -T MuTect2 -R ${params.genome} -I:tumor ${finalBams[0]} -o ${Sample[0]}.mutect2.vcf --dbsnp ${params.site2} -L ${params.bedfile} -nct 30 -contamination 0.02 -mbq 30
+	java -Xmx10G -jar ${params.GATK38_path} -T MuTect2 -R ${params.genome} -I:tumor ${finalBam} -o ${Sample}.mutect2.vcf --dbsnp ${params.site2} -L ${params.bedfile}.bed -nct 30 -contamination 0.02 -mbq 30
 	"""
 }
 
 process freebayes_run{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.freebayes.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.freebayes.vcf'
 	
 	input:
-		set (Sample , file(finalBams)) from runFreebayes_ch
+		tuple val (Sample), file(finalBam), file (finalBamBai)
 	output:
-		file ("*.freebayes.vcf")
-		tuple (Sample, file ("*.freebayes.vcf")) into freebayesDone_ch
+		tuple val (Sample), file ("*.freebayes.vcf")
 
 	script:
 	"""
-	${params.freebayes_path} -f ${params.genome} -b ${finalBams[0]} -t ${params.bedfile} > ${Sample[0]}.freebayes.vcf 	
+	${params.freebayes_path} -f ${params.genome} -b ${finalBam} -t ${params.bedfile}.bed > ${Sample}.freebayes.vcf 	
 	"""
 }
 
-process platypus_run{
-	executor="local"
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.platypus.vcf'
-	input:
-		set (Sample , file(finalBams)) from runPlatypus_ch
-	output:
-		tuple (Sample, file ("*.platypus.vcf")) into platypusDone_ch
-	script:
-	"""
-	python ${params.platypus_path} callVariants --bamFiles=${finalBams[0]} --refFile=${params.genome} --output=${Sample[0]}.platypus.vcf --nCPU=15 --minFlank=0 --filterDuplicates=0 --maxVariants=6 --minReads=6 --regions=${params.regions}
-	"""
-}
 
 process vardict_run{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.vardict.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.vardict.vcf'
 	
 	input:
-		set (Sample , file(finalBams)) from runVardict_ch
+		tuple val (Sample), file(finalBam), file (finalBamBai)
 	output:
-		tuple (Sample, file ("*.vardict.vcf")) into vardictDone_ch
-		val Sample into vardict2somaticseq_ch
+		tuple val (Sample), file ("*.vardict.vcf")
 	script:
 	"""
-	VarDict -G ${params.genome} -f 0.03 -N ${Sample[0]} -b ${finalBams[0]} -c 1 -S 2 -E 3 -g 4 ${params.bedfile} | sed '1d' | teststrandbias.R | var2vcf_valid.pl -N ${Sample[0]} -E -f 0.03 > ${Sample[0]}.vardict.vcf
+	VarDict -G ${params.genome} -f 0.03 -N ${Sample} -b ${finalBam} -c 1 -S 2 -E 3 -g 4 ${params.bedfile}.bed | sed '1d' | teststrandbias.R | var2vcf_valid.pl -N ${Sample} -E -f 0.03 > ${Sample}.vardict.vcf
 	"""
 }
 
 process varscan_run{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.varscan_snp.vcf'
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.varscan_indel.vcf'
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.varscan_snp.vcf.gz'
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.varscan_indel.vcf.gz'
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.varscan.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.varscan_snp.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.varscan_indel.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.varscan_snp.vcf.gz'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.varscan_indel.vcf.gz'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.varscan.vcf'
 	
 	input:
-		set (Sample , file(finalBams)) from runVarscan_ch
+		tuple val (Sample), file(finalBam), file (finalBamBai)
 	output:
-		tuple (Sample, file ("*.varscan_snp.vcf.gz"), file ("*.varscan_indel.vcf.gz")) into varscanDone_ch
-		tuple (file ("*.varscan_snp.vcf"),  file ("*.varscan_indel.vcf"), file("*.varscan.vcf"))
-		val Sample into varscan2somaticseq_ch
+		tuple val(Sample), file ("*.varscan_snp.vcf"),  file ("*.varscan_indel.vcf"), file("*.varscan.vcf")
 		
 	script:
 	"""
-	${params.samtools} mpileup -f ${params.genome} ${finalBams[0]} > ${Sample[0]}.mpileup
-	java -jar ${params.varscan_path} mpileup2snp ${Sample[0]}.mpileup --min-coverage 10 --min-reads2 5 --min-avg-qual 15 --min-var-freq 0.003 --p-value 1e-4 --output-vcf 1 > ${Sample[0]}.varscan_snp.vcf
-	java -jar ${params.varscan_path} mpileup2indel ${Sample[0]}.mpileup --min-coverage 10 --min-reads2 5 --min-avg-qual 15 --min-var-freq 0.003 --p-value 1e-4 --output-vcf 1 > ${Sample[0]}.varscan_indel.vcf
-	bgzip -c ${Sample[0]}.varscan_snp.vcf > ${Sample[0]}.varscan_snp.vcf.gz
-	bgzip -c ${Sample[0]}.varscan_indel.vcf > ${Sample[0]}.varscan_indel.vcf.gz
-	${params.bcftools_path} index -t ${Sample[0]}.varscan_snp.vcf.gz
-	${params.bcftools_path} index -t ${Sample[0]}.varscan_indel.vcf.gz
-	${params.bcftools_path} concat -a ${Sample[0]}.varscan_snp.vcf.gz ${Sample[0]}.varscan_indel.vcf.gz -o ${Sample[0]}.varscan.vcf
-	"""
-}
-
-process strelka_run{
-	publishDir "$PWD/${Sample[0]}/variants/strelka", mode: 'copy', pattern: '*.strelka.vcf'
-	
-	input:
-		set (Sample , file(finalBams)) from runStrelka_ch
-	output:
-		val (Sample) into strelkaDone_ch
-		val Sample into strelka2somaticseq_ch
-	script:
-	"""
-	${params.strelka_path}/configureStrelkaGermlineWorkflow.py --bam ${finalBams[0]} --referenceFasta ${params.genome} --callRegions  ${params.bedfile}.gz --targeted --runDir ${PWD}/${Sample[0]}/variants/strelka/
-	${PWD}/${Sample[0]}/variants/strelka/runWorkflow.py -m local -j 20
-	gunzip -f ${PWD}/${Sample[0]}/variants/strelka/results/variants/variants.vcf.gz
-	mv ${PWD}/${Sample[0]}/variants/strelka/results/variants/variants.vcf $PWD/${Sample[0]}/variants/${Sample[0]}.strelka.vcf
-	
-	${params.strelka_path}/configureStrelkaSomaticWorkflow.py --normalBam ${params.NA12878_bam}  --tumorBam ${finalBams[0]} --referenceFasta ${params.genome} --callRegions ${params.bedfile}.gz --targeted --runDir ${PWD}/${Sample[0]}/variants/strelka-somatic/
-	${PWD}/${Sample[0]}/variants/strelka-somatic/runWorkflow.py -m local -j 20
-	
-	${params.bcftools_path} concat -a ${PWD}/${Sample[0]}/variants/strelka-somatic/results/variants/somatic.indels.vcf.gz ${PWD}/${Sample[0]}/variants/strelka-somatic/results/variants/somatic.snvs.vcf.gz -o ${PWD}/${Sample[0]}/variants/${Sample[0]}.strelka-somatic.vcf
+	${params.samtools} mpileup -f ${params.genome} ${finalBam} > ${Sample}.mpileup
+	java -jar ${params.varscan_path} mpileup2snp ${Sample}.mpileup --min-coverage 10 --min-reads2 5 --min-avg-qual 15 --min-var-freq 0.003 --p-value 1e-4 --output-vcf 1 > ${Sample}.varscan_snp.vcf
+	java -jar ${params.varscan_path} mpileup2indel ${Sample}.mpileup --min-coverage 10 --min-reads2 5 --min-avg-qual 15 --min-var-freq 0.003 --p-value 1e-4 --output-vcf 1 > ${Sample}.varscan_indel.vcf
+	bgzip -c ${Sample}.varscan_snp.vcf > ${Sample}.varscan_snp.vcf.gz
+	bgzip -c ${Sample}.varscan_indel.vcf > ${Sample}.varscan_indel.vcf.gz
+	${params.bcftools_path} index -t ${Sample}.varscan_snp.vcf.gz
+	${params.bcftools_path} index -t ${Sample}.varscan_indel.vcf.gz
+	${params.bcftools_path} concat -a ${Sample}.varscan_snp.vcf.gz ${Sample}.varscan_indel.vcf.gz -o ${Sample}.varscan.vcf
 	"""
 }
 
 process lofreq_run{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.lofreq.filtered.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.lofreq.filtered.vcf'
 	
 	input:
-		set (Sample , file(finalBams)) from runLofreq_ch
+		tuple val (Sample), file(finalBam), file (finalBamBai)
 	output:
-		tuple (Sample, file ("*.lofreq.filtered.vcf")) into lofreqDone_ch
-		val Sample into lofreq2somaticseq_ch
+		tuple val(Sample), file ("*.lofreq.filtered.vcf")
 	script:
 	"""
-	${params.lofreq_path} viterbi -f ${params.genome} -o ${Sample[0]}.lofreq.pre.bam ${finalBams[0]}
-	${params.samtools} sort ${Sample[0]}.lofreq.pre.bam > ${Sample[0]}.lofreq.bam
-	${params.lofreq_path} call -b dynamic -C 50 -a 0.00005 -q 30 -Q 30 -m 50 -f ${params.genome} -l ${params.bedfile} -o ${Sample[0]}.lofreq.vcf ${Sample[0]}.lofreq.bam
-	${params.lofreq_path} filter -a 0.01 -i ${Sample[0]}.lofreq.vcf -o ${Sample[0]}.lofreq.filtered.vcf
+	${params.lofreq_path} viterbi -f ${params.genome} -o ${Sample}.lofreq.pre.bam ${finalBam}
+	${params.samtools} sort ${Sample}.lofreq.pre.bam > ${Sample}.lofreq.bam
+	${params.lofreq_path} call -b dynamic -C 50 -a 0.00005 -q 30 -Q 30 -m 50 -f ${params.genome} -l ${params.bedfile}.bed -o ${Sample}.lofreq.vcf ${Sample}.lofreq.bam
+	${params.lofreq_path} filter -a 0.01 -i ${Sample}.lofreq.vcf -o ${Sample}.lofreq.filtered.vcf
+	"""
+}
+
+process strelka_run{
+	publishDir "$PWD/${Sample}/variants/strelka", mode: 'copy', pattern: '*.strelka.vcf'
+	
+	input:
+		tuple val (Sample), file(finalBam), file (finalBamBai)
+	output:
+		val (Sample)
+	script:
+	"""
+	${params.strelka_path}/configureStrelkaGermlineWorkflow.py --bam ${finalBam} --referenceFasta ${params.genome} --callRegions  ${params.bedfile}.bed.gz --targeted --runDir ${PWD}/${Sample}/variants/strelka/
+	${PWD}/${Sample}/variants/strelka/runWorkflow.py -m local -j 20
+	gunzip -f ${PWD}/${Sample}/variants/strelka/results/variants/variants.vcf.gz
+	mv ${PWD}/${Sample}/variants/strelka/results/variants/variants.vcf $PWD/${Sample}/variants/${Sample}.strelka.vcf
+	
+	${params.strelka_path}/configureStrelkaSomaticWorkflow.py --normalBam ${params.NA12878_bam}  --tumorBam ${finalBam} --referenceFasta ${params.genome} --callRegions ${params.bedfile}.bed.gz --targeted --runDir ${PWD}/${Sample}/variants/strelka-somatic/
+	${PWD}/${Sample}/variants/strelka-somatic/runWorkflow.py -m local -j 20
+	
+	${params.bcftools_path} concat -a ${PWD}/${Sample}/variants/strelka-somatic/results/variants/somatic.indels.vcf.gz ${PWD}/${Sample}/variants/strelka-somatic/results/variants/somatic.snvs.vcf.gz -o ${PWD}/${Sample}/variants/${Sample}.strelka-somatic.vcf
 	"""
 }
 
 process somaticSeq_run {
-	publishDir "$PWD/${Sample_id[0]}/variants/", mode: 'copy', pattern: '*.somaticseq.vcf'
-	publishDir "$PWD/${Sample_id[0]}/variants/", mode: 'copy', pattern: '*.avinput'
-	publishDir "$PWD/${Sample_id[0]}/ANNOVAR/", mode: 'copy', pattern: '*.hg19_multianno.csv'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.somaticseq.vcf'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.avinput'
+	publishDir "$PWD/${Sample}/ANNOVAR/", mode: 'copy', pattern: '*.hg19_multianno.csv'
 	input:
-		each (Sample_id) from runSomaticSeq_ch.toList()
-		val (Sample) from mutect2somaticseq_ch.toList()
-		val (Sample) from vardict2somaticseq_ch.toList()
-		val (Sample) from varscan2somaticseq_ch.toList()
-		val (Sample) from lofreq2somaticseq_ch.toList()
-		val (Sample) from strelka2somaticseq_ch.toList()
+		tuple val (Sample), file(mutectVcf), file(vardictVcf), file(varscanVcf), file(lofreqVcf)
 	output:
-		tuple (Sample_id, file ("*.somaticseq.vcf")) into somaticseqDone_ch
-		tuple (Sample_id, file ("*.avinput"), file ("*.hg19_multianno.csv"))
-		tuple (Sample_id, file ("*.hg19_multianno.csv")) into formatSomaticseq_ch
+		tuple val (Sample), file ("*.somaticseq.vcf"), file("*.hg19_multianno.csv")
 	script:
 	"""
-	python3 /scratch/hematopath/programs/somaticseq/somaticseq/somaticseq_parallel.py --output-directory ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq --genome-reference ${params.genome} --inclusion-region ${params.bedfile} --threads 25 --algorithm xgboost  --dbsnp-vcf  ~/reference_genomes/dbSNPGATK/dbsnp_138.hg19.somatic.vcf single --bam-file ${PWD}/${Sample_id[0]}/gatk38_processing/${Sample_id[0]}.final.bam --mutect2-vcf ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.mutect2.vcf --vardict-vcf ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.vardict.vcf --varscan-vcf ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.varscan.vcf --lofreq-vcf ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.lofreq.vcf	--strelka-vcf ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.strelka.vcf  --sample-name ${Sample_id[0]}
+	python3 ${params.somaticseq_path} --output-directory ${PWD}/${Sample}/variants/${Sample}.somaticseq --genome-reference ${params.genome} --inclusion-region ${params.bedfile}.bed --threads 25 --algorithm xgboost  --dbsnp-vcf  ~/reference_genomes/dbSNPGATK/dbsnp_138.hg19.somatic.vcf single --bam-file ${PWD}/${Sample}/gatk38_processing/${Sample}.final.bam --mutect2-vcf ${PWD}/${Sample}/variants/${Sample}.mutect2.vcf --vardict-vcf ${PWD}/${Sample}/variants/${Sample}.vardict.vcf --varscan-vcf ${PWD}/${Sample}/variants/${Sample}.varscan.vcf --lofreq-vcf ${PWD}/${Sample}/variants/${Sample}.lofreq.vcf	--strelka-vcf ${PWD}/${Sample}/variants/${Sample}.strelka.vcf  --sample-name ${Sample}
 	
-	grep "^#" ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/Consensus.sSNV.vcf > ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf
-	grep -v "^#" ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/Consensus.sSNV.vcf | sort -k1,1V -k2,2g >> ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf
-	bgzip -c ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf > ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf.gz
-	${params.bcftools_path} index -t ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf.gz
+	grep "^#" ${PWD}/${Sample}/variants/${Sample}.somaticseq/Consensus.sSNV.vcf > ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf
+	grep -v "^#" ${PWD}/${Sample}/variants/${Sample}.somaticseq/Consensus.sSNV.vcf | sort -k1,1V -k2,2g >> ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf
+	bgzip -c ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf > ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf.gz
+	${params.bcftools_path} index -t ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf.gz
 	
-	grep "^#" ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/Consensus.sINDEL.vcf > ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf
-	grep -v "^#" ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/Consensus.sINDEL.vcf | sort -k1,1V -k2,2g >> ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf
-	bgzip -c ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf > ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf.gz
-	${params.bcftools_path} index -t ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf.gz
+	grep "^#" ${PWD}/${Sample}/variants/${Sample}.somaticseq/Consensus.sINDEL.vcf > ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf
+	grep -v "^#" ${PWD}/${Sample}/variants/${Sample}.somaticseq/Consensus.sINDEL.vcf | sort -k1,1V -k2,2g >> ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf
+	bgzip -c ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf > ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf.gz
+	${params.bcftools_path} index -t ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf.gz
 	
-	${params.bcftools_path} concat -a ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_snv.vcf.gz ${PWD}/${Sample_id[0]}/variants/${Sample_id[0]}.somaticseq/somaticseq_indel.vcf.gz -o ${Sample_id[0]}.somaticseq.vcf
+	${params.bcftools_path} concat -a ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_snv.vcf.gz ${PWD}/${Sample}/variants/${Sample}.somaticseq/somaticseq_indel.vcf.gz -o ${Sample}.somaticseq.vcf
 	
-	perl ${params.annovar2_path}/convert2annovar.pl -format vcf4 ${Sample_id[0]}.somaticseq.vcf  --outfile ${Sample_id[0]}.somaticseq.avinput --withzyg --includeinfo
+	perl ${params.annovarLatest_path}/convert2annovar.pl -format vcf4 ${Sample}.somaticseq.vcf  --outfile ${Sample}.somaticseq.avinput --withzyg --includeinfo
 	
-	perl ${params.annovar2_path}/table_annovar.pl ${Sample_id[0]}.somaticseq.avinput --out ${Sample_id[0]}.somaticseq --remove --protocol refGene,cytoBand,cosmic84,popfreq_all_20150413,avsnp150,intervar_20180118,1000g2015aug_all --operation g,r,f,f,f,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout --thread 10 ${params.annovar2_path}/humandb/ --xreffile ${params.annovar2_path}/example/gene_fullxref.txt
+	perl ${params.annovarLatest_path}/table_annovar.pl ${Sample}.somaticseq.avinput --out ${Sample}.somaticseq --remove --protocol refGene,cytoBand,cosmic84,popfreq_all_20150413,avsnp150,intervar_20180118,1000g2015aug_all --operation g,r,f,f,f,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout --thread 10 ${params.annovarLatest_path}/humandb/ --xreffile ${params.annovarLatest_path}/example/gene_fullxref.txt
+	"""
+}
+
+process platypus_run{
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.platypus.vcf'
+	input:
+		tuple val (Sample), file(finalBams), file(finalBamBai)
+	output:
+		tuple val(Sample), file ("*.platypus.vcf")
+	script:
+	"""
+	python2.7 ${params.platypus_path} callVariants --bamFiles=${finalBams[0]} --refFile=${params.genome} --output=${Sample}.platypus.vcf --nCPU=15 --minFlank=0 --filterDuplicates=0 --maxVariants=6 --minReads=6 --regions=${params.bedfile}_regions.txt
 	"""
 }
 
 process coverage {
-	publishDir "$PWD/${Sample[0]}/coverage/", mode: 'copy'
+	publishDir "$PWD/${Sample}/coverage/", mode: 'copy'
 	input:
-		set (Sample , file(finalBams)) from runCoverage_ch
+		tuple val (Sample), file(finalBams), file(finalBamBai)
 	output:
-		file ("*")
-		
+		tuple val (Sample), file ("*")
 	script:
 	"""
-	${params.bedtools} bamtobed -i ${finalBams[0]} > ${Sample[0]}.bed
-	${params.bedtools} coverage -counts -a ${params.bedfile} -b ${Sample[0]}.bed > ${Sample[0]}.counts.bed
+	${params.bedtools} bamtobed -i ${finalBams[0]} > ${Sample}.bed
+	${params.bedtools} coverage -counts -a ${params.bedfile}.bed -b ${Sample}.bed > ${Sample}.counts.bed
 	
 	"""
 }
 
 process getITD_run{
-	publishDir "$PWD/${Sample[0]}/getITD/", mode: 'copy'
+	publishDir "$PWD/${Sample}/getITD/", mode: 'copy'
 	input:
-		set (Sample , file(finalBams)) from rungetITD_ch
+		tuple val (Sample), file(finalBam), file(finalBamBai)
 	output:
-		file ("*")
-		val Sample into getITD_Done_ch
+		tuple val (Sample), file ("*")
 	script:
 	"""
-	gunzip -c ${params.sequences}/${Sample[0]}*_R1_*.fastq.gz > ${Sample[0]}_R1_.fastq
-	gunzip -c ${params.sequences}/${Sample[0]}*_R2_*.fastq.gz > ${Sample[0]}_R2_.fastq
+	gunzip -c ${params.sequences}/${Sample}*_R1_*.fastq.gz > ${Sample}_R1_.fastq
+	gunzip -c ${params.sequences}/${Sample}*_R2_*.fastq.gz > ${Sample}_R2_.fastq
 	
-	python3 ${params.getitd_path}/getitd.py ${Sample[0]} ${Sample[0]}_R1_.fastq ${Sample[0]}_R2_.fastq -require_indel_free_primers False -anno ${params.getitd_path}/anno/amplicon_kayser.tsv -reference ${params.getitd_path}/anno/amplicon.txt -forward_primer ${params.forward_primer} -reverse_primer ${params.reverse_primer} -forward_adapter  ATACGAGATCCGTAATCGGGAAGCTGAAG -reverse_adapter ACACGCACGATCCGACGGTAGTGT -nkern 25
+	python3 ${params.getitd_path}/getitd.py ${Sample} ${Sample}_R1_.fastq ${Sample}_R2_.fastq -require_indel_free_primers False -anno ${params.getitd_path}/anno/amplicon_kayser.tsv -reference ${params.getitd_path}/anno/amplicon.txt -forward_primer ${params.forward_primer} -reverse_primer ${params.reverse_primer} -forward_adapter  ATACGAGATCCGTAATCGGGAAGCTGAAG -reverse_adapter ACACGCACGATCCGACGGTAGTGT -nkern 25
 	"""
 }
 
-process combine_variants{
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy'
-	publishDir "$PWD/${Sample[0]}/variants/", mode: 'copy', pattern: '*.avinput'
-	publishDir "$PWD/${Sample[0]}/ANNOVAR/", mode: 'copy', pattern: '*.hg19_multianno.csv'
-	
+process getITD_done{
 	input:
-		set (Sample, file(freebayesVcf), file(platypusVcf)) from freebayesDone_ch.join(platypusDone_ch)
+		tuple val (Sample), file ("*")
 	output:
-		file ("*")
-		tuple (Sample, file ("*.combined.vcf")) into combineVariantsDone_ch
-		tuple (Sample, file ("*.hg19_multianno.csv")) into formatCombined_ch
+		val Sample
 	script:
 	"""
-	grep "^#" ${PWD}/${Sample[0]}/variants/${Sample[0]}.freebayes.vcf > ${Sample[0]}.freebayes.sorted.vcf
-	grep -v "^#" ${PWD}/${Sample[0]}/variants/${Sample[0]}.freebayes.vcf | sort -k1,1V -k2,2g >> ${Sample[0]}.freebayes.sorted.vcf
-	
-	grep "^#" ${PWD}/${Sample[0]}/variants/${Sample[0]}.platypus.vcf > ${Sample[0]}.platypus.sorted.vcf
-	grep -v "^#" ${PWD}/${Sample[0]}/variants/${Sample[0]}.platypus.vcf | sort -k1,1V -k2,2g >> ${Sample[0]}.platypus.sorted.vcf
-	
-	java -jar ${params.GATK38_path} -T CombineVariants -R ${params.genome} --variant ${Sample[0]}.freebayes.sorted.vcf --variant ${Sample[0]}.platypus.sorted.vcf -o ${Sample[0]}.combined.vcf -genotypeMergeOptions UNIQUIFY
-	
-	perl ${params.annovar2_path}/convert2annovar.pl -format vcf4 ${Sample[0]}.combined.vcf  --outfile ${Sample[0]}.combined.avinput --withzyg --includeinfo
-	
-	perl ${params.annovar2_path}/table_annovar.pl ${Sample[0]}.combined.avinput --out ${Sample[0]}.combined --remove --protocol refGene,cytoBand,cosmic84,popfreq_all_20150413,avsnp150,intervar_20180118,1000g2015aug_all --operation g,r,f,f,f,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout --thread 10 ${params.annovar2_path}/humandb/ --xreffile ${params.annovar2_path}/example/gene_fullxref.txt
+	cp -r ${PWD}/${Sample}/getITD/${Sample}_getitd/ ${PWD}/Final_Output/${Sample}/
 	"""
+
+
+
 }
 
 process coverview_run {
 	executor="local"
-	publishDir "$PWD/${Sample[0]}/Coverview/", mode: 'copy'
+	publishDir "$PWD/${Sample}/Coverview/", mode: 'copy'
 	input:
-		set (Sample , file(finalBam)) from runCoverview_ch
+		tuple val (Sample), file(finalBam), file(finalBamBai)
 	output:
-		val (Sample) into coverviewDone_ch
+		val (Sample)
 	script:
 	"""
-	mkdir $PWD/${Sample[0]}/Coverview/
-	${params.coverview_path}/coverview -i ${finalBam[0]} -b ${params.bedfile} -c ${params.coverview_path}/config/config.txt -o ${PWD}/${Sample[0]}/Coverview/${Sample[0]}.coverview
-	python3 ${params.coverview_script_path} ${PWD}/${Sample[0]}/Coverview/${Sample[0]}.coverview_regions.txt ${PWD}/${Sample[0]}/Coverview/${Sample[0]}.coverview_regions.csv
-	cp ${PWD}/${Sample[0]}/Coverview/${Sample[0]}.coverview_regions.csv ${PWD}/Coverview/${Sample[0]}.coverview_regions.csv
+	mkdir $PWD/${Sample}/Coverview/
+	${params.coverview_path}/coverview -i ${finalBam} -b ${params.bedfile}.bed -c ${params.coverview_path}/config/config.txt -o ${PWD}/${Sample}/Coverview/${Sample}.coverview
+	python3 ${params.coverview_script_path} ${PWD}/${Sample}/Coverview/${Sample}.coverview_regions.txt ${PWD}/${Sample}/Coverview/${Sample}.coverview_regions.csv
+	cp ${PWD}/${Sample}/Coverview/${Sample}.coverview_regions.csv ${PWD}/Coverview/${Sample}.coverview_regions.csv
 	"""
 }
 
 process coverview_report {
+	errorStrategy 'ignore'
 	executor="local"
 	input:
-		set (Sample) from coverviewDone_ch.toList()
+		val (Sample)
 	output:
-		val Sample into coverviewreportDone_ch
+		val Sample
 	script:
 	"""
 	python3.6 ${params.coverview_report_path} ${PWD}/Coverview/ ${PWD}/Final_Output/
 	"""
 }
 
-process cava {
-	publishDir "$PWD/${Sample[0]}/CAVA/", mode: 'copy'
+process combine_variants{
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy'
+	publishDir "$PWD/${Sample}/variants/", mode: 'copy', pattern: '*.avinput'
+	publishDir "$PWD/${Sample}/ANNOVAR/", mode: 'copy', pattern: '*.hg19_multianno.csv'
 	
 	input:
-		tuple (Sample, file (somaticVcf), file(combinedVcf)) from somaticseqDone_ch.join(combineVariantsDone_ch)
-	
+		tuple val (Sample), file(freebayesVcf), file(platypusVcf)
 	output:
-		file ("*")
-		val Sample into cavaDone_ch
+		tuple val(Sample), file ("*.combined.vcf"),  file ("*.hg19_multianno.csv")
 	script:
 	"""
-	echo true
-	${params.cava_path}/cava -c ${params.cava_path}/config.txt -t 10 -i $PWD/${Sample[0]}/variants/${Sample[0]}.somaticseq.vcf -o ${Sample[0]}.somaticseq
-	${params.cava_path}/cava -c ${params.cava_path}/config.txt -t 10 -i $PWD/${Sample[0]}/variants/${Sample[0]}.combined.vcf -o ${Sample[0]}.combined
-	python3.6 ${params.cava_script_path} ${Sample[0]}.somaticseq.txt ${Sample[0]}.combined.txt ${Sample[0]}.cava.csv
+	grep "^#" ${PWD}/${Sample}/variants/${Sample}.freebayes.vcf > ${Sample}.freebayes.sorted.vcf
+	grep -v "^#" ${PWD}/${Sample}/variants/${Sample}.freebayes.vcf | sort -k1,1V -k2,2g >> ${Sample}.freebayes.sorted.vcf
+	
+	grep "^#" ${PWD}/${Sample}/variants/${Sample}.platypus.vcf > ${Sample}.platypus.sorted.vcf
+	grep -v "^#" ${PWD}/${Sample}/variants/${Sample}.platypus.vcf | sort -k1,1V -k2,2g >> ${Sample}.platypus.sorted.vcf
+	
+	java -jar ${params.GATK38_path} -T CombineVariants -R ${params.genome} --variant ${Sample}.freebayes.sorted.vcf --variant ${Sample}.platypus.sorted.vcf -o ${Sample}.combined.vcf -genotypeMergeOptions UNIQUIFY
+	
+	perl ${params.annovarLatest_path}/convert2annovar.pl -format vcf4 ${Sample}.combined.vcf  --outfile ${Sample}.combined.avinput --withzyg --includeinfo
+	
+	perl ${params.annovarLatest_path}/table_annovar.pl ${Sample}.combined.avinput --out ${Sample}.combined --remove --protocol refGene,cytoBand,cosmic84,popfreq_all_20150413,avsnp150,intervar_20180118,1000g2015aug_all --operation g,r,f,f,f,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout --thread 10 ${params.annovarLatest_path}/humandb/ --xreffile ${params.annovarLatest_path}/example/gene_fullxref.txt
 	"""
 }
 
-process Qualimap{
-	executor="local"
-	errorStrategy 'retry'
+process cava {
+	publishDir "$PWD/${Sample}/CAVA/", mode: 'copy'
+	
 	input:
-		set (Sample, file (finalBam)) from bamGenerated_ch
+		tuple val(Sample), file (somaticVcf), file (somaticseqMultianno), file(combinedVcf)
+	
 	output:
-		val Sample into qualimapDone_ch
-	shell:
+		tuple val(Sample), file ("*.cava.csv")
+	script:
 	"""
-	echo ${PWD}
-	${params.qualimap_path}/qualimap bamqc -bam ${finalBam[0]} -gff ${params.qualimap_bedfile} -c -outdir ${PWD}/${Sample[0]}/Qualimap/ -outfile ${Sample[0]}.qc_report.pdf
+	${params.cava_path}/cava -c ${params.cava_path}/config.txt -t 10 -i $PWD/${Sample}/variants/${Sample}.somaticseq.vcf -o ${Sample}.somaticseq
+	${params.cava_path}/cava -c ${params.cava_path}/config.txt -t 10 -i $PWD/${Sample}/variants/${Sample}.combined.vcf -o ${Sample}.combined
+	python3.6 ${params.cava_script_path} ${Sample}.somaticseq.txt ${Sample}.combined.txt ${Sample}.cava.csv
 	"""
 }
 
 process format_somaticseq {
-	executor="local"
 	input:
-		set (Sample , file(hgMultiannoFile)) from formatSomaticseq_ch
+		tuple val (Sample), file(somaticseqVcf), file (multianno)
 	output:
-		val Sample into somaticseqMerge_ch
+		val Sample
 	script:
 	"""
-	python3.6 ${params.format_somaticseq_script} ${PWD}/${Sample[0]}/ANNOVAR/${hgMultiannoFile} ${PWD}/${Sample[0]}/Annovar_Modified/${Sample[0]}.somaticseq.csv
+	python3.6 ${params.format_somaticseq_script} ${PWD}/${Sample}/ANNOVAR/${Sample}.somaticseq.hg19_multianno.csv ${PWD}/${Sample}/Annovar_Modified/${Sample}.somaticseq.csv
 	"""
 }
 
 process format_combined {
-	executor="local"
 	input:
-		set (Sample , file(hgMultiannoFile)) from formatCombined_ch
+		tuple val(Sample), file (combinedVcf),  file (hg19_multianno)
 	output:
-		val Sample into combinedMerge_ch
+		val Sample
 	script:
 	"""
-	python3.6 ${params.format_combined_script} ${PWD}/${Sample[0]}/ANNOVAR/${hgMultiannoFile} ${PWD}/${Sample[0]}/Annovar_Modified/${Sample[0]}.combined.csv
+	python3.6 ${params.format_combined_script} ${PWD}/${Sample}/ANNOVAR/${hg19_multianno} ${PWD}/${Sample}/Annovar_Modified/${Sample}.combined.csv
 	"""
 }
 
 process merge_csv {
-	executor="local"
 	input:
-		each (Sample) from somaticseqMerge_ch.toList()
-		set (Sample2) from combinedMerge_ch.toList()
-		set (Sample3) from cavaDone_ch.toList()
+		tuple val (Sample), file (cava_csv)
 	output:
-		val Sample into mergeDone_ch
+		val Sample
 	script:
 	"""
-	echo true
-	python3.6 ${params.merge_csvs_script} ${Sample[0]} ${PWD}/${Sample[0]}/Annovar_Modified/ ${PWD}/Final_Output/${Sample[0]}/${Sample[0]}.xlsx ${PWD}/${Sample[0]}/CAVA/ ${PWD}/${Sample[0]}/Coverview/${Sample[0]}.coverview_regions.csv
+
+	python3.6 ${params.merge_csvs_script} ${Sample} ${PWD}/${Sample}/Annovar_Modified/ ${PWD}/Final_Output/${Sample}/${Sample}.xlsx ${PWD}/${Sample}/CAVA/ ${PWD}/${Sample}/Coverview/${Sample}.coverview_regions.csv
 	"""
 }
 
 process Final_Output {
-	executor="local"
 	input:
-		val Sample from qualimapDone_ch.join(getITD_Done_ch)
+		tuple val (Sample), file ("*")
 	output:
-		val Sample into finalOutput_ch
+		val Sample
 	script:
 	"""
-	python3.6 /scratch/hematopath/hemoseq_v2/mutation_detector_nextflow/scripts/coverageplot.py ${Sample} $PWD/${Sample}/coverage/${Sample}.counts.bed $PWD/${Sample}/coverage/
-	cp ${PWD}/${Sample}/Qualimap/${Sample}.qc_report.pdf ${PWD}/Final_Output/${Sample}/
-	cp -r ${PWD}/${Sample}/getITD/${Sample}_getitd/ ${PWD}/Final_Output/${Sample}/
+	python3.6 ${params.coveragePlot_script} ${Sample} $PWD/${Sample}/coverage/${Sample}.counts.bed $PWD/${Sample}/coverage/
 	cp ${PWD}/${Sample}/coverage/${Sample}.Low_Coverage.png ${PWD}/Final_Output/${Sample}/
 	"""
 }
 
 process remove_files{
 	input:
-		each Sample from mergeDone_ch.toList()
-		val Sample1 from coverviewreportDone_ch.toList()
-		val Sample2 from finalOutput_ch.toList()
+		val (Sample)
 	script:
 	"""
-	rm -rf ${PWD}/${Sample[0]}/
+	rm -rf ${PWD}/${Sample}/
 	rm -rf ${PWD}/Coverview/
 	"""
 }
 
+workflow MIPS {
+
+    Channel
+		.fromPath(params.input)
+		.splitCsv(header:false)
+		.flatten()
+		.map{ it }
+		.set { samples_ch }
+	
+	main:
+	trimming_fastq_mcf(samples_ch) | gzip | pair_assembly_pear | mapping_reads | sam_conversion
+	RealignerTargetCreator(sam_conversion.out)
+	IndelRealigner(RealignerTargetCreator.out.join(sam_conversion.out)) | BaseRecalibrator
+	PrintReads(IndelRealigner.out.join(BaseRecalibrator.out)) | generatefinalbam
+	platypus_run(generatefinalbam.out)
+	coverage(generatefinalbam.out)
+	freebayes_run(generatefinalbam.out)
+	mutect2_run(generatefinalbam.out)
+	vardict_run(generatefinalbam.out)
+	varscan_run(generatefinalbam.out)
+	lofreq_run(generatefinalbam.out)
+	strelka_run(generatefinalbam.out)
+	somaticSeq_run(mutect2_run.out.join(vardict_run.out.join(varscan_run.out.join(lofreq_run.out.join(strelka_run.out)))))
+	getITD_run(generatefinalbam.out)
+	getITD_done(getITD_run.out)
+	
+	coverview_run(generatefinalbam.out)
+	coverview_report(coverview_run.out.toList())
+	
+	combine_variants(freebayes_run.out.join(platypus_run.out))
+	cava(somaticSeq_run.out.join(combine_variants.out))
+	format_somaticseq(somaticSeq_run.out)
+	format_combined(combine_variants.out)
+	
+	merge_csv(format_somaticseq.out.join(format_combined.out.join(cava.out)))
+	Final_Output(coverage.out)
+	remove_files(merge_csv.out.join(coverview_run.out.join(Final_Output.out.join(getITD_done.out))))
+}
+
+workflow ALL {
+	
+    Channel
+		.fromPath(params.input)
+		.splitCsv(header:false)
+		.flatten()
+		.map{ it }
+		.set { samples_ch }
+	
+	main:
+	trimming_fastq_mcf(samples_ch) | gzip | pair_assembly_pear | mapping_reads | sam_conversion
+	RealignerTargetCreator(sam_conversion.out)
+	IndelRealigner(RealignerTargetCreator.out.join(sam_conversion.out)) | BaseRecalibrator
+	PrintReads(IndelRealigner.out.join(BaseRecalibrator.out)) | generatefinalbam
+	platypus_run(generatefinalbam.out)
+	coverage(generatefinalbam.out)
+	freebayes_run(generatefinalbam.out)
+	mutect2_run(generatefinalbam.out)
+	vardict_run(generatefinalbam.out)
+	varscan_run(generatefinalbam.out)
+	lofreq_run(generatefinalbam.out)
+	strelka_run(generatefinalbam.out)
+	somaticSeq_run(mutect2_run.out.join(vardict_run.out.join(varscan_run.out.join(lofreq_run.out.join(strelka_run.out)))))
+	
+	coverview_run(generatefinalbam.out)
+	coverview_report(coverview_run.out.toList())
+	
+	combine_variants(freebayes_run.out.join(platypus_run.out))
+	cava(somaticSeq_run.out.join(combine_variants.out))
+	format_somaticseq(somaticSeq_run.out)
+	format_combined(combine_variants.out)
+	
+	merge_csv(format_somaticseq.out.join(format_combined.out.join(cava.out)))
+	Final_Output(coverage.out)
+	remove_files(merge_csv.out.join(coverview_run.out.join(Final_Output.out)))
+}
+
+workflow CLL {
+	
+    Channel
+		.fromPath(params.input)
+		.splitCsv(header:false)
+		.flatten()
+		.map{ it }
+		.set { samples_ch }
+	
+	main:
+	trimming_fastq_mcf(samples_ch) | gzip | pair_assembly_pear | mapping_reads | sam_conversion
+	RealignerTargetCreator(sam_conversion.out)
+	IndelRealigner(RealignerTargetCreator.out.join(sam_conversion.out)) | BaseRecalibrator
+	PrintReads(IndelRealigner.out.join(BaseRecalibrator.out)) | generatefinalbam
+	platypus_run(generatefinalbam.out)
+	coverage(generatefinalbam.out)
+	freebayes_run(generatefinalbam.out)
+	mutect2_run(generatefinalbam.out)
+	vardict_run(generatefinalbam.out)
+	varscan_run(generatefinalbam.out)
+	lofreq_run(generatefinalbam.out)
+	strelka_run(generatefinalbam.out)
+	somaticSeq_run(mutect2_run.out.join(vardict_run.out.join(varscan_run.out.join(lofreq_run.out.join(strelka_run.out)))))
+	
+	coverview_run(generatefinalbam.out)
+	coverview_report(coverview_run.out.toList())
+	
+	combine_variants(freebayes_run.out.join(platypus_run.out))
+	cava(somaticSeq_run.out.join(combine_variants.out))
+	format_somaticseq(somaticSeq_run.out)
+	format_combined(combine_variants.out)
+	
+	merge_csv(format_somaticseq.out.join(format_combined.out.join(cava.out)))
+	Final_Output(coverage.out)
+	remove_files(merge_csv.out.join(coverview_run.out.join(Final_Output.out)))
+}
+
+
+
+
+process trimming_trimmomatic {
+	maxForks 10
+	publishDir "$PWD/${Sample}/trimmed", mode: 'copy'
+	input:
+		val Sample
+	output:
+		tuple val (Sample), file("*.fq.gz")
+	script:
+	"""
+	trimmomatic PE \
+	${params.sequences}/${Sample}*_R1_*.fastq.gz ${params.sequences}/${Sample}*_R2_*.fastq.gz \
+	-baseout ${Sample}.fq.gz \
+	ILLUMINACLIP:${params.adapters}:2:30:10:2:keepBothReads \
+	LEADING:3 SLIDINGWINDOW:4:15 MINLEN:40
+	"""
+}
+
+process pair_assembly_flash {
+	maxForks 20
+	publishDir "$PWD/${Sample}/flash", mode: 'copy'
+	input:
+		tuple val (Sample), file(trimmedFiles)
+	output:
+		tuple val (Sample), file('*')
+	script:
+	"""
+	${params.flash_path} ${trimmedFiles[0]} ${trimmedFiles[2]} --cap-mismatch-quals -O -M 250 -o ${Sample} 
+	"""
+}
+
+process samtools_sort{
+	maxForks 20
+	publishDir "$PWD/${Sample}/Alignment", mode: 'copy', pattern: '*.sorted.bam'
+	publishDir "$PWD/${Sample}/Alignment", mode: 'copy', pattern: '*.bam.bai'
+	publishDir "$PWD/${Sample}/Alignment", mode: 'copy', pattern: '*.bed'
+	publishDir "$PWD/Final_Output/${Sample}/", mode: 'copy', pattern: '*.sorted.bam'
+	publishDir "$PWD/Final_Output/${Sample}", mode: 'copy', pattern: '*.bam.bai'
+
+	input:
+		tuple val (Sample), file(samFile)
+	output:
+		tuple val (Sample), file ("*.sorted.bam"), file ("*.sorted.bam.bai")
+	
+	script:
+	"""
+	${params.samtools} view -b ${samFile} > ${Sample}.bam
+	${params.samtools} sort ${Sample}.bam > ${Sample}.sorted.bam
+	${params.samtools} index ${Sample}.sorted.bam > ${Sample}.sorted.bam.bai
+	${params.bedtools} bamtobed -i ${Sample}.sorted.bam > ${Sample}.bed
+	"""
+}
+
+process vardict_run_amplicon{
+	maxForks 15
+	publishDir "$PWD/${Sample}/VariantCalling/Vardict/", mode: 'copy'
+	input:
+		tuple val (Sample), file (sortedBam), file (sortedBamBai)
+	output:
+		tuple val (Sample), file ("*.hg19_multianno.csv")
+	script:
+	"""
+	VarDict -G ${params.genome} -f 0.01 -N ${Sample} -b ${sortedBam} -c 1 -S 2 -E 3 -g 4 ${params.bedfile}.bed | sed '1d' | ${params.vardict_path}/teststrandbias.R | ${params.vardict_path}/var2vcf_valid.pl -N ${Sample} -E -f 0.01 > ${Sample}_vardict.vcf
+	perl ${params.annovar2_path}/convert2annovar.pl -format vcf4 ${Sample}_vardict.vcf --outfile ${Sample}.avinput --withzyg --includeinfo
+	perl ${params.annovar2_path}/table_annovar.pl ${Sample}.avinput --out ${Sample}_final --remove --protocol refGene,cosmic84,exac03 --operation g,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout ${params.annovar2_path}/humandb/
+	"""
+}
+
+process lofreq_run_amplicon{
+	maxForks 15
+	publishDir "$PWD/${Sample}/VariantCalling/Lofreq/", mode: 'copy'
+	input:
+		tuple val (Sample), file (sortedBam), file (sortedBamBai)
+	output:
+		tuple val (Sample), file ("*.hg19_multianno.csv")
+	
+	script:
+	"""
+	${params.lofreq_path} viterbi -f ${params.genome} -o ${Sample}.lofreq.pre.bam ${sortedBam}
+	samtools sort ${Sample}.lofreq.pre.bam > ${Sample}.lofreq.bam
+	${params.lofreq_path} call -b dynamic -C 50 -a 0.00005 -q 30 -Q 30 -m 50 -f ${params.genome} -l ${params.bedfile}.bed -o ${Sample}.lofreq.vcf ${Sample}.lofreq.bam
+	${params.lofreq_path} filter -a 0.01 -i ${Sample}.lofreq.vcf -o ${Sample}.lofreq.filtered.vcf
+	perl ${params.annovar2_path}/convert2annovar.pl -format vcf4 ${Sample}.lofreq.filtered.vcf --outfile ${Sample}.avinput --withzyg --includeinfo
+	perl ${params.annovar2_path}/table_annovar.pl ${Sample}.avinput --out ${Sample}_final --remove --protocol refGene,cosmic84,exac03 --operation g,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout ${params.annovar2_path}/humandb/
+	"""
+}
+
+process mutect_run_amplicon{
+	maxForks 15
+	publishDir "$PWD/${Sample}/VariantCalling/Mutect2/", mode: 'copy'
+	input:
+		tuple val (Sample), file (sortedBam), file (sortedBamBai)
+	output:
+		tuple val (Sample), file ("*.hg19_multianno.csv")
+		
+	script:
+	"""
+	java -Xmx10G -jar ${params.GATK38_path} -T MuTect2 -R ${params.genome} -I:tumor ${PWD}/${Sample}/Alignment/${sortedBam} -o ${Sample}_mutect.vcf -L ${params.bedfile}.bed
+	perl ${params.annovar2_path}/convert2annovar.pl -format vcf4 ${Sample}_mutect.vcf --outfile ${Sample}.avinput --withzyg --includeinfo
+	perl ${params.annovar2_path}/table_annovar.pl ${Sample}.avinput --out ${Sample}_final --remove --protocol refGene,cosmic84,exac03 --operation g,f,f --buildver hg19 --nastring '-1' --otherinfo --csvout ${params.annovar2_path}/humandb/
+	"""
+}
+
+process format_VardictOutput_amplicon{
+	publishDir "$PWD/${Sample}/VariantCalling/", mode: 'copy'
+	input:
+		tuple val (Sample), file (multiannoFile)
+	output:
+		val (Sample)
+	script:
+	"""
+	python3 ${params.formatVardict_script_path} ${multiannoFile} ${Sample} ${PWD}/${Sample}/VariantCalling/
+	"""
+}
+
+process format_MutectOutput_amplicon{
+	publishDir "$PWD/${Sample}/VariantCalling/", mode: 'copy'
+	input:
+		tuple val (Sample), file (multiannoFile)
+	output:
+		val (Sample)
+	script:
+	"""
+	python3 ${params.formatMutect_script_path} ${multiannoFile} ${Sample} ${PWD}/${Sample}/VariantCalling/
+	"""
+}
+
+process format_LofreqOutput_amplicon{
+	maxForks 20
+	publishDir "$PWD/${Sample}/VariantCalling/", mode: 'copy'
+	input:
+		tuple val (Sample), file (multiannoFile)
+	output:
+		val (Sample)
+	script:
+	"""
+	python3 ${params.formatLofreq_script_path} ${multiannoFile} ${Sample} ${PWD}/${Sample}/VariantCalling/
+	"""
+}
+
+process combine_output_amplicon{
+	maxForks 20
+	input:
+		val (Sample)
+	output:
+		val (Sample)
+	script:
+	"""
+	python3 ${params.combinedCsvFormat_script_path} ${PWD}/${Sample}/VariantCalling/${Sample}_vardict.csv ${PWD}/${Sample}/VariantCalling/${Sample}_mutect.csv ${PWD}/${Sample}/VariantCalling/${Sample}_lofreq.csv ${PWD}/${Sample}/VariantCalling/ ${Sample}
+	
+	python3 ${params.KDMdb_script_path} ${PWD}/${Sample}/VariantCalling/${Sample}_combined.csv ${PWD}/${Sample}/VariantCalling/ ${Sample}
+	"""
+}
+
+process merge_csvs_amplicon{
+	errorStrategy 'ignore'
+	maxForks 20
+	input:
+		val Sample
+	output:
+		val Sample
+	script:
+	"""
+	python3 ${params.mergeAmpliconCsv_path} ${Sample} ${PWD}
+	"""
+}
+
+
+
+
+workflow AMPLICON {
+    Channel
+		.fromPath(params.input)
+		.splitCsv(header:false)
+		.flatten()
+		.map{ it }
+		.set { Sample }
+	
+	main:
+	trimming_trimmomatic(Sample) | pair_assembly_flash | mapping_reads | samtools_sort
+	coverage(samtools_sort.out)
+	vardict_run_amplicon(samtools_sort.out) | format_VardictOutput_amplicon
+	lofreq_run_amplicon(samtools_sort.out) | format_LofreqOutput_amplicon
+	mutect_run_amplicon(samtools_sort.out) | format_MutectOutput_amplicon
+	
+	combine_output_amplicon(format_VardictOutput_amplicon.out.join(format_LofreqOutput_amplicon.out.join(format_MutectOutput_amplicon.out)))
+	
+	merge_csvs_amplicon(combine_output_amplicon.out)
+	
+	remove_files(merge_csvs_amplicon.out)
+	
+}
+
+
+
+workflow.onComplete {
+	log.info ( workflow.success ? "\n\nDone! Output in the 'Final_Output' directory \n" : "Oops .. something went wrong" )
+}
 
 

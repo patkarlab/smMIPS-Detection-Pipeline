@@ -1,11 +1,15 @@
 import pandas as pd
 import sys
 
+
 args = sys.argv
+
 filename = args[1]
 outfile = args[2]
 
+
 df = pd.read_csv(filename)
+#cols=['Chr','Start','End','Ref','Alt','FILTER','SOMATIC FLAG','NUM_TOOLS','Tools.calledVariants','VAF','REF_COUNT','ALT_COUNT','Func.refGene','Gene.refGene','ExonicFunc.refGene','AAChange.refGene','Gene_full_name.refGene','Function_description.refGene','Disease_description.refGene','cosmic84','PopFreqMax','1000G_ALL','ExAC_ALL','CG46','ESP6500siv2_ALL','InterVar_automated']
 common_cols=['Chr','Start','End','Ref','Alt','Variant_Callers','REF_COUNT','ALT_COUNT','VAF','Func.refGene','Gene.refGene','ExonicFunc.refGene','AAChange.refGene','Gene_full_name.refGene','Function_description.refGene','Disease_description.refGene','cosmic84','PopFreqMax','1000G_ALL','ExAC_ALL','CG46','ESP6500siv2_ALL','InterVar_automated']
 x = df['Otherinfo1']
 discarded_column=df.columns.get_loc('Otherinfo2')
@@ -47,10 +51,13 @@ df1=df.iloc[:,:5]
 df2=pd.DataFrame(data, columns=data.keys())
 df3=df.iloc[:,5:discarded_column]
 horizontal_stack = pd.concat([df1, df2, df3], axis=1)
-
 # Format changes
 horizontal_stack.replace(to_replace='.', value='-1', inplace=True)
 horizontal_stack=horizontal_stack.loc[:, common_cols]  
 horizontal_stack.rename(columns = {'Func.refGene':'Variant_Site', 'ExonicFunc.refGene':'Variant_Function', 'AAChange.refGene':'Amino.Acid_Change','Gene.refGene':'Gene','Gene_full_name.refGene':'Gene.Full_Name','Function_description.refGene':'Gene.Function','Disease_description.refGene':'Disease_description'}, inplace = True) 
+#Data Filtering..
+#df=df.loc[(df.Variant_Site == 'exonic') & (df.Variant_Function != 'synonymous SNV')]
 print('New shape:',horizontal_stack.shape)
 horizontal_stack.to_csv(outfile, index=False)
+# TODO Comment this
+#horizontal_stack.to_csv(filepath+'OCIAMl3.combined.csv', index=False)
