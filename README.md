@@ -7,39 +7,40 @@ The pipeline trims adapters, creates paired end assembly, maps the reads to the 
 
 ## Pipeline Summary
 
-1. Adaptor Trimming (fastq-mcf)
-2. Merge paired-end reads (PEAR)
-3. Alignment (bwa mem)
-4. SAMtools conversion
+1. Adaptor Trimming (fastq-mcf)  
+2. Merge paired-end reads (PEAR)  
+3. Alignment (bwa mem)  
+4. SAMtools conversion  
 5. Generating Final BAM files based on GATK Best Practices  
-&nbsp;&nbsp;&nbsp;&nbsp;i. RealignerTargetCreator  
-&nbsp;&nbsp;&nbsp;&nbsp;ii. BaseRecalibrator  
-&nbsp;&nbsp;&nbsp;&nbsp;iii. PrintReads  
-&nbsp;&nbsp;&nbsp;&nbsp;iv. SAMtools sort and index on aligned recaliberated BAM files   
+    i. RealignerTargetCreator  
+    ii. BaseRecalibrator  
+    iii. PrintReads  
+    iv. SAMtools sort and index on aligned recaliberated BAM files   
 6. Variant Calling using-  
-&nbsp;&nbsp;&nbsp;&nbsp;a. Mutect2  
-&nbsp;&nbsp;&nbsp;&nbsp;b. Freebayes  
-&nbsp;&nbsp;&nbsp;&nbsp;c. Platypus  
-&nbsp;&nbsp;&nbsp;&nbsp;d. VarDict  
-&nbsp;&nbsp;&nbsp;&nbsp;e. VarScan  
-&nbsp;&nbsp;&nbsp;&nbsp;f. Strelka  
-&nbsp;&nbsp;&nbsp;&nbsp;g. LoFreq  
-&nbsp;&nbsp;&nbsp;&nbsp;h. SomaticSeq with inputs from-  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;i. Mutect2  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ii. VarDict  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;iii. VarScan  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;iv. Lofreq  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;v. Strelka  
+    a. Mutect2  
+    b. Freebayes  
+    c. Platypus  
+    d. VarDict  
+    e. VarScan  
+    f. Strelka  
+    g. LoFreq  
+    h. SomaticSeq with inputs from-  
+            i. Mutect2  
+            ii. VarDict  
+            iii. VarScan  
+            iv. Lofreq  
+            v. Strelka  
+  
+7. Freebayes and Platypus VCF files are combined (GATK CombineVariants)  
+8. Annotation of SomaticSeq and Combined(Freebayes+Platypus) VCF files. (Using ANNOVAR)  
+9. getITD  
+10. Coverview  
+11. CAVA  
+12. ANNOVAR Annotated files are formatted using custom python scripts  
+13. Excel Sheet generated for each sample in Final_Output Directory   
+14. Temporary files for each sample are deleted  
 
-7. Freebayes and Platypus VCF files are combined (GATK CombineVariants)
-8. Annotation of SomaticSeq and Combined(Freebayes+Platypus) VCF files. (Using ANNOVAR)
-9. getITD
-10. Coverview
-11. CAVA
-12. Qualimap
-13. ANNOVAR Annotated files are formatted using custom python scripts
-14. Excel Sheet generated for each sample in Final_Output Directory 
-15. Temporary files for each sample are deleted
+
 
 ### Software Dependencies
 fastq-mcf = 1.05  
@@ -54,47 +55,49 @@ Lofreq =  2.1.4
 VarDictJava = 1.8  
 Varscan = v2.3.9  
 Platypus  
+Annovar  
   
 ## Usage
-### Prerequisites
+### Prerequisites-
 1. Install dependencies listed above.
 2. Create a sample sheet in .CSV format, with a list of sample IDs.
-3. Create BEDfiles as follows  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a. Create a BED4 coordinate file  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;    (chr    start-coordinate    stop-coordinate    gene/exon-name)  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;    Example: chr9	133738125	133738246	ABL1Exon4_1  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;    Update path to this bedfile in nextflow.config for the "bedfile" parameter.  
+    (For example: "20NGS1234" for sample 20NGS1234_S4_L001_R1_001.fastq.gz  20NGS1234_S4_L001_R2_001.fastq.gz)
+    
+3. Create BEDfiles as follows-
+    a. Create a BED4 coordinate file
+        (chr    start-coordinate    stop-coordinate    gene/exon-name
+        Example: chr9	133738125	133738246	ABL1Exon4_1)
         
-    b. Create a BED6 coordinate file for qualimap by adding two extra columns with '0' and '.' for each region.  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;    Example: chr9	133738125	133738246	ABL1Exon4_1   0   .  
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;    Update path to this bedfile in nextflow.config for the "qualimap_bedfile" parameter.  
+        Update path to this bedfile in nextflow.config for the "bedfile" parameter.
         
-    c. Generate platypus regions file as follows-  
+    b. Generate platypus regions file as follows-
         
-        awk 'BEGIN{OFS=""}{print $1,":",$2,"-",$3}' original_file.bed > original_file_regions.txt  
-      Add path to this bedfile in nextflow.config file for the "regions" parameter.  
+        awk 'BEGIN{OFS=""}{print $1,":",$2,"-",$3}' original_file.bed > original_file_regions.txt
+      Add path to this bedfile in nextflow.config file for the "regions" parameter.
       
-    d. Sort, compress and index bed file  
+    c. Sort, compress and index bed file
         
-        sort -k 1,1 -k 2,2n -k 3,3n original_bedfile.bed | bgzip -c > original_bedfile.bed.gz  
+        sort -k 1,1 -k 2,2n -k 3,3n original_bedfile.bed | bgzip -c > original_bedfile.bed.gz
         tabix -p bed original_bedfile.bed.gz
+    
+    (Note: Make sure the 4 files below have the same name: example bedfile.bed , bedfile_regions.txt, bedfile.bed.gz , bedfile.bed.gz.tbi)
+    
+4. Upload all fastq.gz files to a directory. Add the path to the directory in the sequences parameter in nextflow.config or provide the path on command line with the --sequences option.
+5. Update config file (nextflow.config) to add the paths to the input sample sheet, directory containing sequences, BEDfile and to the tools required by the pipeline.
 
-4. Update config file (nextflow.config) to update the paths to the input sample sheet, directory containing sequences, BEDfiles and to the tools required by the pipeline.  
-
-To run-  
+### To run-
     
     cd /path/to/directory/containing/main.nf/
-    nextflow run main.nf [ options ]
+    nextflow run main.nf [ options ] -entry [workflow]
 
-Optional Arguments (not required if updated in nextflow.config file)  
-
+## Optional Arguments (not required if updated in nextflow.config file)
     --sequences             path to directory containing fastq files.
     --input                 path to csv file containing list of sample IDs.
     --genome                path to reference genome
     --adaptors              path to FASTA file of adaptors for trimming
-    --bedfile               path to BED4 coordinate BEDfile
-    --qualimap_bedfile      path to BED6 qualimap BEDfile
-    --regions               path to coordinate regions in .txt format
-    
-    
-
+    --bedfile               path to BED4 coordinate BEDfile (without the extension)
+## Workflow
+    --entry MIPS            to run the MIPS pipeline
+    --entry ALL             to run ALL pipeline
+    --entry CLL             to run CLL pipeline
+    --entry AMPLICON        for amplicon based pipelines
